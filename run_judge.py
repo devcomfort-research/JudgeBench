@@ -12,33 +12,67 @@ import utils.judges as judges
 import utils.metrics as metrics
 
 
-async def judge_pairs(pairs: List[Dict[str, Any]], judge_name: str, judge_model: str, concurrency_limit: int = 1, reverse_order: int = False, output_file: str = None):
+async def judge_pairs(
+    pairs: List[Dict[str, Any]],
+    judge_name: str,
+    judge_model: str,
+    concurrency_limit: int = 1,
+    reverse_order: bool = False,
+    output_file: str = None,
+) -> List[Dict[str, Any]]:
+    """Judge a list of answer pairs asynchronously using a specified judge.
+
+    Parameters
+    ----------
+    pairs : List[Dict[str, Any]]
+        A list of dictionaries, each representing a pair of responses to be judged.
+    judge_name : str
+        The name/type of the judge to use (e.g., 'arena_hard').
+    judge_model : str
+        The specific model identifier to be used by the judge.
+    concurrency_limit : int, optional
+        Maximum number of concurrent judgment tasks (default is 1).
+    reverse_order : bool, optional
+        Whether to judge each pair in both (A, B) and (B, A) orders (default is False).
+    output_file : str, optional
+        Path to a JSONL file where each completed judgment will be appended.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        The list of pairs updated with judgment results.
+    """
     semaphore = asyncio.Semaphore(concurrency_limit)
     judge = judges.get_judge_from_judge_name_and_model(judge_name, judge_model)
     file_lock = asyncio.Lock()
-    
+
     async def judge_pair(pair: Dict[str, Any]):
         async with semaphore:
-            
             question = pair["question"]
             response_A = pair["response_A"]
             response_B = pair["response_B"]
-            
+
             try:
                 judgment_1 = await judge.get_judgment(question, response_A, response_B)
             except Exception as e:
-                print(f"Failed to judge pair {pair['pair_id']} due to the following error: {e}.")
+                print(
+                    f"Failed to judge pair {pair['pair_id']} due to the following error: {e}."
+                )
                 judgment_1 = None
             judgments = [judgment_1]
-            
+
             if reverse_order:
                 try:
-                    judgment_2 = await judge.get_judgment(question, response_B, response_A)
+                    judgment_2 = await judge.get_judgment(
+                        question, response_B, response_A
+                    )
                 except Exception as e:
-                    print(f"Failed to judge pair {pair['pair_id']} due to the following error: {e}.")
+                    print(
+                        f"Failed to judge pair {pair['pair_id']} due to the following error: {e}."
+                    )
                     judgment_2 = None
                 judgments.append(judgment_2)
-            
+
             pair["judge_name"] = judge_name
             pair["judgments"] = judgments
             return pair
@@ -49,23 +83,29 @@ async def judge_pairs(pairs: List[Dict[str, Any]], judge_name: str, judge_model:
         pair = await future
         if output_file is not None:
             async with file_lock:
-                with open(output_file, 'a') as f:
-                    f.write(json.dumps(pair, ensure_ascii=False) + '\n')
+                with open(output_file, "a") as f:
+                    f.write(json.dumps(pair, ensure_ascii=False) + "\n")
 
     return pairs
 
 
 def main(args: argparse.Namespace) -> None:
-    
+    """Main execution function for the judging script.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed command-line arguments containing judge settings and input path.
+    """
     random.seed(args.seed)
-    
-    pairs = file_operations.read_jsonl(args.pairs)    
+
+    pairs = file_operations.read_jsonl(args.pairs)
 
     dataset_name = os.path.basename(args.pairs).replace(".jsonl", "")
     file_path = f"{dataset_name},judge_name={args.judge_name},judge_model={args.judge_model.replace('/', '_')}.jsonl"
     os.makedirs("./outputs", exist_ok=True)
     file_path = os.path.join("./outputs", file_path)
-    
+
     if os.path.exists(file_path):
         print(f"File {file_path} already exists. Skipping judging pairs...")
         original_num_pairs = len(pairs)
@@ -74,8 +114,7 @@ def main(args: argparse.Namespace) -> None:
         pairs = [pair for pair in pairs if pair["pair_id"] not in existing_pair_ids]
         print(f"Skipped {original_num_pairs - len(pairs)} pairs.")
 
-
-    if pairs: 
+    if pairs:
         print("Judging pairs ...")
         pairs = asyncio.run(
             judge_pairs(
@@ -89,20 +128,42 @@ def main(args: argparse.Namespace) -> None:
         )
 
     # 7. compute final metrics
-    print("Computing final metrics ...") 
-    pairs = file_operations.read_jsonl(file_path)  # need to load all the history, not just the generated one.
-    for source in ["mmlu-pro", "livebench-reasoning", "livebench-math", "livecodebench", ""]:
-        score = metrics.compute_final_metrics(pairs, not args.single_game, include_fn = lambda x: x["source"].startswith(source))
+    print("Computing final metrics ...")
+    pairs = file_operations.read_jsonl(
+        file_path
+    )  # need to load all the history, not just the generated one.
+    for source in [
+        "mmlu-pro",
+        "livebench-reasoning",
+        "livebench-math",
+        "livecodebench",
+        "",
+    ]:
+        score = metrics.compute_final_metrics(
+            pairs,
+            not args.single_game,
+            include_fn=lambda x: x["source"].startswith(source),
+        )
         print(f"{source if source else 'Overall'}: {score:.2f}%.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--judge_name', type=str, required=True) # name of judge, should correspond to an entry in utils/judges/get_judge_from_judge_name_and_model.
-    parser.add_argument('--judge_model', type=str, required=True) # model to be used by judge.
-    parser.add_argument('--single_game', action="store_true") # by default, we run each pair through twice (A,B) and (B,A). This flag will only run the original ordering, and should be used if a judge is order-independent.
-    parser.add_argument('--seed', type=int, default=42) # seed to use.
-    parser.add_argument('--concurrency_limit', type=int, default=1) # We use asyncio to speed things up, 10 is usally a good value here.
-    parser.add_argument('--pairs', type=str, required=True) # path to jsonl containing pairs for judging
+    parser.add_argument(
+        "--judge_name", type=str, required=True
+    )  # name of judge, should correspond to an entry in utils/judges/get_judge_from_judge_name_and_model.
+    parser.add_argument(
+        "--judge_model", type=str, required=True
+    )  # model to be used by judge.
+    parser.add_argument(
+        "--single_game", action="store_true"
+    )  # by default, we run each pair through twice (A,B) and (B,A). This flag will only run the original ordering, and should be used if a judge is order-independent.
+    parser.add_argument("--seed", type=int, default=42)  # seed to use.
+    parser.add_argument(
+        "--concurrency_limit", type=int, default=1
+    )  # We use asyncio to speed things up, 10 is usally a good value here.
+    parser.add_argument(
+        "--pairs", type=str, required=True
+    )  # path to jsonl containing pairs for judging
     args = parser.parse_args()
     main(args)
