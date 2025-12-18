@@ -5,9 +5,25 @@ import jinja2
 # Set up the template environment
 _template_path = os.path.join(os.path.dirname(__file__), "templates")
 _template_loader = jinja2.FileSystemLoader(_template_path)
-_template_env = jinja2.Environment(loader=_template_loader, cache_size=-1, trim_blocks=True, lstrip_blocks=True)
+_template_env = jinja2.Environment(
+    loader=_template_loader, cache_size=-1, trim_blocks=True, lstrip_blocks=True
+)
 
 
-def render_template(template_name, **kwargs):
+def render_template(template_name: str, **kwargs) -> str:
+    """Render a Jinja2 template from the templates directory.
+
+    Parameters
+    ----------
+    template_name : str
+        The name of the template file without the .jinja2 extension.
+    **kwargs
+        Arbitrary keyword arguments to pass to the template for rendering.
+
+    Returns
+    -------
+    str
+        The rendered template content.
+    """
     template = _template_env.get_template(template_name + ".jinja2")
     return template.render(**kwargs)
