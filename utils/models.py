@@ -7,11 +7,9 @@
 
 from abc import ABC, abstractmethod
 from typing import List, Dict
-import os
 
+import litellm
 import backoff
-import openai
-import anthropic
 
 
 class ChatAPI(ABC):
@@ -32,265 +30,72 @@ class ChatAPI(ABC):
     async def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
         """Send a list of messages to the model and get a response.
 
-                Parameters
-                ----------
-                messages : List[Dict[str, str]]
-                    The conversation history as a list of message objects.
-                **kwargs
-                    Additional arguments for the chat completion request.
-
-                Returns
-        -------
-                str
-                    The model's response text.
-        """
-        pass
-
-
-class OpenAIAPI(ChatAPI):
-    """API implementation for OpenAI models."""
-
-    def __init__(self, model: str):
-        """Initialize the OpenAI API client.
-
-        Parameters
-        ----------
-        model : str
-            The name of the OpenAI model.
-        """
-        self.model = model
-        self.client = openai.AsyncClient(api_key=os.environ.get("OPENAI_API_KEY"))
-
-    @backoff.on_exception(backoff.fibo, (openai.OpenAIError), max_tries=5, max_value=30)
-    async def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
-        """Send a chat completion request to OpenAI.
-
         Parameters
         ----------
         messages : List[Dict[str, str]]
-            The list of messages for the conversation.
+            The conversation history as a list of message objects.
         **kwargs
-            Additional parameters for the OpenAI API call.
-
-        Returns
-        -------
-        str
-            The generated response content.
-        """
-        if self.model.startswith("o1"):
-            if messages[0]["role"] == "system":
-                system_message = messages.pop(0)["content"]
-                user_message = messages[0]["content"]
-                messages[0] = {
-                    "role": "user",
-                    "content": f"<|BEGIN_SYSTEM_MESSAGE|>\n{system_message.strip()}\n<|END_SYSTEM_MESSAGE|>\n\n{user_message}",
-                }
-
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-            )
-
-        else:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                **kwargs,
-            )
-        return response.choices[0].message.content
-
-
-class AnthropicAPI(ChatAPI):
-    """API implementation for Anthropic models."""
-
-    def __init__(self, model: str):
-        """Initialize the Anthropic API client.
-
-        Parameters
-        ----------
-        model : str
-            The name of the Anthropic model.
-        """
-        self.model = model
-        self.client = anthropic.AsyncClient(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-
-    @backoff.on_exception(
-        backoff.fibo, anthropic.AnthropicError, max_tries=5, max_value=30
-    )
-    async def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
-        """Send a message request to Anthropic.
-
-        Parameters
-        ----------
-        messages : List[Dict[str, str]]
-            The messages to send to the model.
-        **kwargs
-            Additional parameters for the Anthropic API call.
+            Additional arguments for the chat completion request.
 
         Returns
         -------
         str
             The model's response text.
         """
-        if messages[0]["role"] == "system":
-            system_message = messages[0]["content"]
-            messages = messages[1:]
-        else:
-            system_message = ""
-
-        response = await self.client.messages.create(
-            model=self.model,
-            messages=messages,
-            system=system_message,
-            # max_tokens=8192, # 4096 for claude-3-*
-            **kwargs,
-        )
-
-        return response.content[0].text
+        pass
 
 
-class GeminiAPI(OpenAIAPI):
-    """API implementation for Google Gemini models via Vertex AI OpenAI interface."""
+class LiteLLMAPI(ChatAPI):
+    """API implementation using LiteLLM to support various model providers."""
 
     def __init__(self, model: str):
-        """Initialize the Gemini API client using Google Cloud credentials.
+        """Initialize the LiteLLM API client.
 
         Parameters
         ----------
         model : str
-            The Gemini model identifier.
+            The name of the model to use.
+
+        Raises
+        ------
+        ValueError
+            If the model name is empty or None.
         """
-        import google.auth
-        import google.auth.transport.requests
-
-        # Programmatically get an access token, need to setup your google cloud account properly,
-        # and get `gcloud auth application-default login` to be run first
-        creds, _project = google.auth.default()
-        auth_req = google.auth.transport.requests.Request()
-        creds.refresh(auth_req)
-        # Note: the credential lives for 1 hour by default (https://cloud.google.com/docs/authentication/token-types#at-lifetime); after expiration, it must be refreshed.
-
-        project_id = creds.quota_project_id
-        # Pass the Vertex endpoint and authentication to the OpenAI SDK
-        self.model = f"google/{model}"
-        self.client = openai.AsyncClient(
-            base_url=f"https://us-central1-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/us-central1/endpoints/openapi",
-            api_key=creds.token,
-        )
-
-    @backoff.on_exception(
-        backoff.fibo, (openai.OpenAIError), max_tries=10, max_value=30
-    )
-    async def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
-        """Send a chat request to Google Gemini.
-
-        Parameters
-        ----------
-        messages : List[Dict[str, str]]
-            The messages for the conversation.
-        **kwargs
-            Additional parameters for the Gemini API call.
-
-        Returns
-        -------
-        str
-            The model's response content.
-        """
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            **kwargs,
-        )
-        message = response.choices[0].message
-        if message is None:
-            # This happens for Google Gemini under high concurrency
-            raise openai.OpenAIError("No response from Google Gemini")
-        return message.content
-
-
-class TogetherAPI(ChatAPI):
-    """API implementation for Together AI models."""
-
-    def __init__(self, model: str):
-        """Initialize the Together AI API client.
-
-        Parameters
-        ----------
-        model : str
-            The Together AI model name.
-        """
+        if not model:
+            raise ValueError(
+                "Model name must be provided and follow LiteLLM rules (e.g., 'gpt-4', 'anthropic/claude-3-opus')."
+            )
         self.model = model
-        self.client = openai.AsyncClient(
-            api_key=os.environ.get("TOGETHER_API_KEY"),
-            base_url="https://api.together.xyz/v1",
-        )
+        # LiteLLM uses environment variables for configuration (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
 
-    @backoff.on_exception(backoff.fibo, (openai.OpenAIError), max_tries=5, max_value=30)
+    @backoff.on_exception(backoff.fibo, (Exception), max_tries=5, max_value=30)
     async def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
-        """Send a chat completion request to Together AI.
+        """Send a chat completion request via LiteLLM.
 
         Parameters
         ----------
         messages : List[Dict[str, str]]
-            The list of conversation messages.
+            The list of messages for the conversation.
         **kwargs
-            Additional parameters for the API call.
+            Additional parameters for the LiteLLM completion call.
 
         Returns
         -------
         str
-            The generated response text.
+            The generated response content.
         """
-        response = await self.client.chat.completions.create(
-            model=self.model,
+        model_name = self.model
+
+        response = await litellm.acompletion(
+            model=model_name,
             messages=messages,
             **kwargs,
         )
         return response.choices[0].message.content
 
-
-class LocalAPI(ChatAPI):
-    """API implementation for local model serving via vLLM."""
-
-    def __init__(self, model: str):
-        """Initialize the local API client pointing to localhost:8000.
-
-        Parameters
-        ----------
-        model : str
-            The name of the local model.
-        """
-        self.model = model
-        self.client = openai.AsyncClient(
-            base_url="http://localhost:8000/v1", api_key="EMPTY"
-        )
-
-    @backoff.on_exception(backoff.fibo, (openai.OpenAIError), max_tries=5, max_value=30)
-    async def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
-        """Send a chat request to the local vLLM instance.
-
-        Parameters
-        ----------
-        messages : List[Dict[str, str]]
-            The conversation messages.
-        **kwargs
-            Additional parameters for the completion call.
-
-        Returns
-        -------
-        str
-            The model response text.
-        """
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            **kwargs,
-        )
-        return response.choices[0].message.content
-
-    @backoff.on_exception(backoff.fibo, (openai.OpenAIError), max_tries=5, max_value=30)
+    @backoff.on_exception(backoff.fibo, (Exception), max_tries=5, max_value=30)
     async def complete(self, prompt: str, **kwargs) -> str:
-        """Send a raw completion request (non-chat) to the local instance.
+        """Send a raw completion request via LiteLLM.
 
         Parameters
         ----------
@@ -304,8 +109,10 @@ class LocalAPI(ChatAPI):
         str
             The generated completion text.
         """
-        response = await self.client.completions.create(
-            model=self.model,
+        model_name = self.model
+
+        response = await litellm.atext_completion(
+            model=model_name,
             prompt=prompt,
             **kwargs,
         )
@@ -313,24 +120,16 @@ class LocalAPI(ChatAPI):
 
 
 def get_chat_api_from_model(model: str) -> ChatAPI:
-    """Factory function to get the appropriate ChatAPI for a given model.
+    """Factory function to get the LiteLLMAPI for any given model.
 
     Parameters
     ----------
     model : str
-        The model identifier (e.g., 'gpt-4o', 'claude-3-opus', etc.).
+        The model identifier.
 
     Returns
     -------
     ChatAPI
-        An instance of a ChatAPI implementation for the model.
+        An instance of LiteLLMAPI.
     """
-    if model.startswith("gpt") or model.startswith("o1"):
-        return OpenAIAPI(model)
-    if model.startswith("claude"):
-        return AnthropicAPI(model)
-    if model.startswith("gemini"):
-        return GeminiAPI(model)
-    if model == "meta-llama/Meta-Llama-3.1-405B-Instruct":
-        return TogetherAPI(model + "-turbo")
-    return LocalAPI(model)
+    return LiteLLMAPI(model)
