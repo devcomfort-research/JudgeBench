@@ -16,13 +16,17 @@ class ChatAPI(ABC):
     """Abstract base class for model chat APIs."""
 
     @abstractmethod
-    def __init__(self, model: str):
-        """Initialize the ChatAPI with a model name.
+    def __init__(self, model: str, api_base: str = None, api_key: str = None):
+        """Initialize the ChatAPI with a model name and optional API configuration.
 
         Parameters
         ----------
         model : str
             The name of the model to use.
+        api_base : str, optional
+            The base URL for the API.
+        api_key : str, optional
+            The API key for authentication.
         """
         pass
 
@@ -48,13 +52,17 @@ class ChatAPI(ABC):
 class LiteLLMAPI(ChatAPI):
     """API implementation using LiteLLM to support various model providers."""
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, api_base: str = None, api_key: str = None):
         """Initialize the LiteLLM API client.
 
         Parameters
         ----------
         model : str
             The name of the model to use.
+        api_base : str, optional
+            The base URL for the API (e.g., for local vLLM or Ollama).
+        api_key : str, optional
+            The API key for authentication.
 
         Raises
         ------
@@ -66,7 +74,10 @@ class LiteLLMAPI(ChatAPI):
                 "Model name must be provided and follow LiteLLM rules (e.g., 'gpt-4', 'anthropic/claude-3-opus')."
             )
         self.model = model
+        self.api_base = api_base
+        self.api_key = api_key
         # LiteLLM uses environment variables for configuration (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+        # but also supports passing api_base/api_key directly in completion calls.
 
     @backoff.on_exception(backoff.fibo, (Exception), max_tries=5, max_value=30)
     async def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
@@ -84,10 +95,13 @@ class LiteLLMAPI(ChatAPI):
         str
             The generated response content.
         """
-        model_name = self.model
+        if self.api_base:
+            kwargs.setdefault("api_base", self.api_base)
+        if self.api_key:
+            kwargs.setdefault("api_key", self.api_key)
 
         response = await litellm.acompletion(
-            model=model_name,
+            model=self.model,
             messages=messages,
             **kwargs,
         )
@@ -109,27 +123,36 @@ class LiteLLMAPI(ChatAPI):
         str
             The generated completion text.
         """
-        model_name = self.model
+        if self.api_base:
+            kwargs.setdefault("api_base", self.api_base)
+        if self.api_key:
+            kwargs.setdefault("api_key", self.api_key)
 
         response = await litellm.atext_completion(
-            model=model_name,
+            model=self.model,
             prompt=prompt,
             **kwargs,
         )
         return response.choices[0].text
 
 
-def get_chat_api_from_model(model: str) -> ChatAPI:
+def get_chat_api_from_model(
+    model: str, api_base: str = None, api_key: str = None
+) -> ChatAPI:
     """Factory function to get the LiteLLMAPI for any given model.
 
     Parameters
     ----------
     model : str
         The model identifier.
+    api_base : str, optional
+        The base URL for the API.
+    api_key : str, optional
+        The API key for authentication.
 
     Returns
     -------
     ChatAPI
         An instance of LiteLLMAPI.
     """
-    return LiteLLMAPI(model)
+    return LiteLLMAPI(model, api_base=api_base, api_key=api_key)
